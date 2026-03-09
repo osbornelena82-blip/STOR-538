@@ -1,0 +1,88 @@
+title: "stor538practice2"
+output:
+  pdf_document: default
+  html_document: default
+date: "2026-02-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(caret)
+```
+
+## R Markdown
+
+
+```{r}
+#importing data
+kicking <- read_csv("Downloads/Practice2/kicking.csv")
+
+#creating new variable called spread
+kicking2 <- kicking %>% mutate(spread = home_score_pre - visiting_score_pre)
+
+#making histogram of spread variable
+ggplot(kicking2, aes(x=spread)) + geom_histogram()
+
+#creating linear model to predict spread using home team, away team, quarter, and yard line
+linearmodel <- lm(spread ~ home_team + away_team + quarter + yardline, data = kicking2)
+
+#summarizing linear model shows coefficients and p values from each predictor, as well as the r-squared and adjusted r squared
+summary(linearmodel)
+
+#creating new model with same predictors but adding an interaction term between home and away team
+linearmodel2 <- lm(spread ~ home_team + away_team + quarter + yardline + home_team * away_team, data = kicking2)
+
+#getting r squared and adjusted r squared from summary of the model
+summarylinmod2<- summary(linearmodel2)
+summarylinmod2$r.squared
+summarylinmod2$adj.r.squared
+
+```
+
+```{r}
+#splitting data into 80-20 training and testing data 
+
+#setting seed for reproducibility
+set.seed(67) 
+
+#counting number of rows in kicking2
+n <- nrow(kicking2)
+
+#picking 0.8 times the total number of rows randomly
+training_index <- sample(1:n, size = 0.8 * n)
+
+#assigning those rows to my training set, and the other rows to my test set
+train_data <- kicking2[training_index, ]
+test_data <- kicking2[-training_index, ]
+
+#refitting my models with training data
+train_mod1 <- lm(spread ~ home_team + away_team + quarter + yardline, data = train_data)
+train_mod2 <- lm(spread ~ home_team + away_team + quarter + yardline + home_team * away_team, data = train_data)
+
+#predicting using test data
+mod1predictions <- predict(train_mod1, newdata = test_data)
+mod2predictions <- predict(train_mod2, newdata = test_data)
+
+#creating a function to find RMSE using real values from test set and predicted values
+RMSE.func= function(actual,predict){
+  rmse= sqrt(mean((actual-predict)^2,na.rm=T))
+  return(rmse)}
+
+#creating a function to find MAD
+MAD.func= function(actual,predict){
+  mad = mean(abs(actual-predict),na.rm=T)
+  return(mad)}
+
+#applying functions to data from both models
+mod1RMSE <- RMSE.func(actual=test_data$spread,predict=mod1predictions)
+mod2RMSE <- RMSE.func(actual=test_data$spread,predict=mod2predictions)
+mod1MAD <-MAD.func(actual=test_data$spread,predict=mod1predictions)
+mod2MAD <-MAD.func(actual=test_data$spread,predict=mod2predictions)
+
+#assembling results into a table
+results = tibble(model = c("Without Interaction", "With Interaction"), RMSE = c(mod1RMSE, mod2RMSE), MAD = c(mod1MAD, mod2MAD))
+print(results)
+```
