@@ -1,0 +1,61 @@
+---
+title: "538 practice"
+output:
+  pdf_document: default
+  html_document: default
+date: "2026-01-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+```
+
+## R Markdown
+
+```{r}
+GameStats <- read_csv("Downloads/GameStats.csv")
+
+#label the fourth column as location, and 6th column as wins because they have no names
+colnames(GameStats)[4] <- "Location"
+colnames(GameStats)[6] <- "Wins"
+
+#change the na values in the location column to H instead
+GameStats_replaced <- GameStats %>%
+  mutate(Location = replace_na(Location, "H"))
+
+#change the @ values in location to A
+GameStats_replaced2 <- GameStats_replaced %>%
+  mutate(Location = recode(Location, "@" = "A"))
+
+#eliminating games played in neutral territory
+GameStats_filtered <- GameStats_replaced2 %>% filter(Location != "N")
+
+#creating gameid to find when two rows are about the same game
+GameStats_id <- GameStats_filtered %>% mutate(GameID = paste(Date, pmin(School, Opponent), pmax(School, Opponent), sep = "_"))
+
+#making dataset wider by combining each pair of rows for a game into a single row
+GameStats_wide <- GameStats_id %>%
+  pivot_wider(
+    id_cols = c(GameID, Date),
+    names_from = Location,
+    values_from = -c(GameID, Location, Date),
+    names_glue = "{Location}{.value}"
+  )
+
+#get rid of unnecessary columns, and then rename the home and away team columns
+GamesStats_renamed <- GameStats_wide %>% select(-c(ASchool, AOpponent, AWins)) %>% rename(Home = HSchool, Away = HOpponent)
+
+#create homewins column by changing W and L to 1 and 0
+GamesStats_wins <- GamesStats_renamed %>% mutate(HomeWins = recode(HWins, W = 1L, L = 0L))
+
+#reorder columns
+GamesStats_reordered <- GamesStats_wins %>% select(Date, Home, Away, HomeWins, everything())
+
+#final getting rid of unnecessary columns
+Cleaned_Game_Stats <- GamesStats_reordered %>% select(-c(HWins, GameID, `HG#`, `AG#`))
+
+write.csv(Cleaned_Game_Stats, file = "~/Documents/Cleaned_Game_Stats.csv", row.names = FALSE)
+```
