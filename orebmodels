@@ -1,0 +1,197 @@
+---
+title: "OREB Modeling"
+output:
+  pdf_document: default
+  html_document: default
+date: "2026-03-08"
+---
+
+
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(neuralnet)
+library(forecast)
+```
+
+
+```{r}
+cleandata <- read_csv("Downloads/FINAL_CLEANED_SET - FINAL_CLEANED_SET.csv")
+
+```
+
+
+```{r}
+#Baseline Model
+cleandata <- cleandata %>% mutate(year = year(ymd(date))) #creating new column for year
+  
+# Calculate the average from training seasons
+train_mean <- mean(cleandata$oreb[cleandata$year <= 2025], na.rm = TRUE)
+
+test_games <- cleandata %>% filter(year > 2025) #filtering test games as games after 2025
+
+mae_baseline <- mean(abs(test_games$oreb - train_mean), na.rm = TRUE) #finding MAE using season average as predicted value
+
+cat("Baseline (season average) MAE:", mae_baseline, "\n")
+
+```
+
+
+```{r}
+#Linear Model 1
+
+
+ #splitting older data into train and new data into test
+train <- cleandata %>% filter(year <= 2025) %>% select(-home_team, -away_team, -game_id, -date, -spread, -total)
+test  <- cleandata %>% filter(year > 2025)  %>% select(-home_team, -away_team, -game_id, -date, -spread, -total)
+
+linearmodel <- lm(oreb ~ ., 
+                  data = train) #training a model based on all possible predictors
+
+summary(linearmodel)
+
+test$predicted_oreb <- predict(linearmodel, newdata = test) #finding predicted values for test data
+
+mae <- mean(abs(test$oreb - test$predicted_oreb), na.rm = TRUE) #calculating MAE
+cat("MAE:", mae, "\n")
+```
+
+
+```{r}
+#Linear Model 2
+
+linearmodel2 <- lm(oreb ~ rest_diff + efg_pct_diff, #using predictors that are significant, and that i will know for future games
+                  data = train) #training a model based on all possible predictors
+
+summary(linearmodel2)
+
+test$predicted_oreb2 <- predict(linearmodel2, newdata = test) #finding predicted values for test data
+
+mae2 <- mean(abs(test$oreb - test$predicted_oreb2), na.rm = TRUE) #calculating MAE
+cat("MAE:", mae2, "\n")
+```
+
+
+```{r}
+# Time series analysis - month
+
+monthly <- cleandata %>% 
+  mutate(month = floor_date(ymd(date), "month")) %>% #creating month column (saving each as the first day of the month)
+  group_by(month) %>% #grouping by month
+  summarise(avg_oreb = mean(oreb, na.rm = TRUE)) %>% #finding avg oreb per month
+  arrange(month) %>% #arranging chronologically
+  mutate(year = year(month)) #finding year from month column
+
+ts_monthly <- ts(monthly$avg_oreb, frequency = 12) # Convert to ts object
+
+# Train on 2025 and earlier, test on 2026
+n_test   <- monthly %>% filter(year > 2025) %>% nrow()  # finding number of rows where year is over 2025
+train_ts <- head(ts_monthly, length(ts_monthly) - n_test)  # training the model on only the rows not including the test rows
+
+
+model_arima <- auto.arima(train_ts)               # creating time series model, needs ts object 
+forecasted  <- forecast(model_arima, h = n_test)  # forecasted values based on model, needs a number 
+
+# Build lookup table: month -> forecasted value
+test_months <- monthly %>% filter(year > 2025) #creating new data frame with only test month
+test_months$forecast_oreb <- as.numeric(forecasted$mean) #adding column for predicted monthly means
+
+# Join forecast back to individual games
+cleandata <- cleandata %>%
+  mutate(month = floor_date(ymd(date), "month")) #saving month column as the date of the first day of that month, so it can be joined 
+
+test_games <- cleandata %>%
+  filter(year(ymd(date)) > 2025) %>%
+  left_join(test_months %>% select(month, forecast_oreb), by = "month") 
+#joining the forecasted monthly means to larger dataset
+
+# MAE on individual games
+mae_ts <- mean(abs(test_games$oreb - test_games$forecast_oreb), na.rm = TRUE)
+cat("Time Series MAE (game level):", mae_ts, "\n")
+```
+
+```{r}
+#Neural Net predictions
+# Neural nets need scaled data (0 to 1 range), so I included features that have 0 to 1 range
+features <- c("orb_pct_diff", "efg_pct_diff", "ft_rate_diff", "tov_pct_diff", "home_back_to_back", "away_back_to_back")
+
+# Remove rows with NAs in these columns
+nn_data <- cleandata %>% 
+  select(all_of(features), oreb, date, year) %>%
+  na.omit()
+
+# Scale oreb
+oreb_min <- min(nn_data$oreb) #finding minimum oreb
+oreb_max <- max(nn_data$oreb) #finding maximum oreb
+nn_data$oreb_scaled <- (nn_data$oreb - oreb_min) / (oreb_max - oreb_min) #finding how far the oreb is above the minimum, over the range of possible orebs
+
+# Chronological split
+train_nn <- nn_data %>% filter(year <= 2025) %>% select(-date, -oreb) # removing oreb and date so they don't affect the model
+test_nn  <- nn_data %>% filter(year >  2025) %>% select(-date, -oreb)
+
+# Fit neural net 
+model_nn <- neuralnet(oreb_scaled ~ orb_pct_diff + efg_pct_diff + ft_rate_diff +  
+                        #using oreb_scaled as target instead of oreb
+                                    tov_pct_diff + home_back_to_back + away_back_to_back,
+                      data          = train_nn,
+                      hidden        = c(4, 2),  # 2 hidden layers, 4 and 2 nodes
+                      linear.output = TRUE)  # makes sure the output isn't between 0 and 1
+
+# Predict then unscale back to real OREB values
+pred_scaled <- predict(model_nn, test_nn %>% select(-oreb_scaled))
+pred_oreb   <- pred_scaled * (oreb_max - oreb_min) + oreb_min # unscaling using oreb_min and oreb_max
+
+# Unscale actual values too for fair comparison
+actual_oreb <- test_nn$oreb_scaled * (oreb_max - oreb_min) + oreb_min
+
+# MAE
+mae_nn <- mean(abs(actual_oreb - pred_oreb), na.rm = TRUE)
+cat("Neural Net MAE:", mae_nn, "\n")
+
+```
+
+
+```{r}
+#hybrid model using time series
+cleandata <- read.csv("Downloads/FINAL_CLEANED_SET - FINAL_CLEANED_SET.csv")
+cleandata <- cleandata %>% mutate(year = year(ymd(date)))
+
+monthly_train <- monthly %>% filter(year <= 2025) #training months when year is less than 2025
+monthly_test  <- monthly %>% filter(year > 2025) #test months when year is greater than 2025
+
+n_test_ts <- nrow(monthly_test) #finding number of rows where year is greater than 2025
+train_ts  <- head(ts_monthly, length(ts_monthly) - n_test_ts) # making ts object on just training rows
+
+model_arima   <- auto.arima(train_ts) #fitting arima model
+arima_fitted  <- as.numeric(model_arima$fitted)  # fitted values for training months
+arima_forecast <- as.numeric(forecast(model_arima, h = n_test_ts)$mean)  # forecasts for test months
+
+monthly_train$arima_oreb <- arima_fitted #adding values from model to training set
+monthly_test$arima_oreb  <- arima_forecast #adding values from model to test set
+
+#making lookup dataset with predictions by month
+arima_lookup <- bind_rows(
+  monthly_train %>% select(month, arima_oreb),
+  monthly_test  %>% select(month, arima_oreb)
+)
+
+#joining predictions back to original dataset
+cleandata2 <- cleandata %>%
+  mutate(month = floor_date(ymd(date), "month")) %>%
+  left_join(arima_lookup, by = "month")
+
+#making chronological split of train and test data for my hybrid model
+cleandata2 <- cleandata2 %>% mutate(year = year(ymd(date)))  
+train_hybrid <- cleandata2 %>% filter(year <= 2025)
+test_hybrid  <- cleandata2 %>% filter(year > 2025)
+
+#fit hybrid model using arima forecast + best linear features
+hybrid_model <- lm(oreb ~ arima_oreb + rest_diff + efg_pct_diff, data = train_hybrid)
+summary(hybrid_model)
+
+#evaluating and finding MAE
+test_hybrid$predicted_oreb <- predict(hybrid_model, newdata = test_hybrid)
+mae_hybrid <- mean(abs(test_hybrid$oreb - test_hybrid$predicted_oreb), na.rm = TRUE)
+cat("Hybrid MAE:", mae_hybrid, "\n")
+```
